@@ -448,11 +448,11 @@ func establishTls(hostname string, conn *net.Conn, proxyInfo *ProxyInfo) (tls.UC
 		sessionDays := int(time.Since(proxyInfo.SessionStartTime).Hours() / 24)
 		if sessionDays > 7 && rand.Float32() < 0.02 { // 2% chance per week
 			// Browser update simulation - move to newer version
-			if clientHello == tls.HelloChrome_106 {
+			if clientHello.Client == "Chrome" && clientHello.Version == "106" {
 				clientHello = tls.HelloChrome_112
-			} else if clientHello == tls.HelloChrome_112 {
+			} else if clientHello.Client == "Chrome" && clientHello.Version == "112" {
 				clientHello = tls.HelloChrome_120
-			} else if clientHello == tls.HelloFirefox_105 {
+			} else if clientHello.Client == "Firefox" && clientHello.Version == "105" {
 				clientHello = tls.HelloFirefox_120
 			}
 		}
