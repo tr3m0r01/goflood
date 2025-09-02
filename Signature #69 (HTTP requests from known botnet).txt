@@ -1,0 +1,149 @@
+การตรวจจับคำขอ HTTP จากบ็อตเน็ตที่รู้จัก (Signature #69)
+
+Cloudflare นำเสนอกฎในชุด HTTP DDoS Attack Protection เพื่อระบุและบล็อคคำขอที่มาจากบ็อตเน็ตที่รู้จัก (signature #69) โดยอาศัยชุดข้อมูลภัยคุกคามและลักษณะเฉพาะของการเชื่อมต่อ มาตรการนี้อยู่ในหมวด “botnets” ซึ่งถูกออกแบบให้มีความแม่นยำสูงและผลบวกปลอมต่ำ
+developers.cloudflare.com
+. เมื่อกฎ Signature #69 ถูกเปิดใช้งาน (block action) มันจะบล็อคคำขอ HTTP ที่ตรงตามเงื่อนไขของกฎนี้
+developers.cloudflare.com
+.
+
+หลักการทำงานของ Signature #69
+
+การใช้ฐานข้อมูล IP ที่เกี่ยวข้องกับบ็อตเน็ต (Botnet Threat Feed) – Cloudflare รวบรวมรายชื่อ IP ที่เคยมีพฤติกรรมทำ HTTP DDoS โจมตีอื่นๆ ไว้ใน Botnet Threat Feed ซึ่งเป็นชุดข้อมูลภัยคุกคาม IP ภายในเครือข่าย Cloudflare
+developers.cloudflare.com
+blog.cloudflare.com
+. Signature #69 อาจกำหนดเงื่อนไขให้ตรวจสอบว่าที่อยู่ IP ของผู้ส่งคำขอเป็นส่วนหนึ่งของฐานข้อมูลนี้หรือไม่ เช่น
+
+if client_ip in CloudflareKnownBotnetIPs:
+    block request
+
+
+โดยฐานข้อมูลนี้จะรวมเฉพาะ IP ที่ถูกตรวจจับว่ามีส่วนร่วมในหลายการโจมตี DDoS และผ่านเกณฑ์ความมั่นใจสูงเท่านั้น
+developers.cloudflare.com
+. การเชื่อมโยงข้อมูลกับ ASN หรือ PeeringDB ยังช่วยยืนยันความถูกต้องของข้อมูลบ็อตเน็ตสำหรับผู้ให้บริการอินเทอร์เน็ต
+developers.cloudflare.com
+.
+
+การวิเคราะห์รูปแบบการเชื่อมต่อและการรับส่งข้อมูล – นอกจาก IP แล้ว Cloudflare ใช้หลักการทางสถิติและเฮือริสติกส์เพื่อตรวจจับพฤติกรรมผิดปกติ เช่น อัตราส่งคำขอต่อวินาทีกว่าปกติ ตัวอย่างเช่น หากคำขอถูกส่งด้วยความถี่สูงผิดปกติจาก IP ที่ไม่เคยรับส่งมาก่อน ระบบอาจทำการบล็อคหรือใส่เงื่อนไขเพิ่มเติม. ในกรณี HTTP DDoS ระดับใหญ่ๆ ส่วนมาก 71% มาจากบ็อตเน็ตที่รู้จัก Cloudflare จะตรวจจับและบล็อคได้รวดเร็วจากการวิเคราะห์แพตเทิร์นของทราฟฟิก
+blog.cloudflare.com
+.
+
+ใช้ตัวบ่งชี้เฉพาะของโปรแกรมอัตโนมัติ (Fingerprinting) – Cloudflare ใช้เทคนิคการสร้างลายเซ็นลักษณะการเชื่อมต่อ เช่น TLS fingerprint (JA3/JA4) เพื่อระบุไคลเอนต์ที่น่าสงสัย
+developers.cloudflare.com
+. บ็อตเน็ตส่วนใหญ่ใช้ไลบรารี TLS ที่มีค่าเฉพาะ (JA3) หรือมาตรฐานใหม่อย่าง JA4 ที่สามารถแยกความแตกต่างระหว่างไคลเอนต์ เช่นเบราว์เซอร์ vs สคริปต์อัตโนมัติได้
+developers.cloudflare.com
+. Signature #69 อาจเปรียบเทียบ JA3/JA4 ของคำขอว่าตรงกับลายเซ็นของบ็อตเน็ตที่รู้จักหรือไม่
+
+if cf.bot_management.ja4 in KnownBotnetJA4List:
+    block request
+
+
+(สมมติว่า cf.bot_management.ja4 คือค่า JA4 fingerprint ที่ Cloudflare เก็บได้
+developers.cloudflare.com
+.)
+
+การแยกแยะ User-Agent และ HTTP Headers – คำขอจากบ็อตมักมีลักษณะเฉพาะ เช่น User-Agent ของไลบรารีอัตโนมัติ (เช่น python-requests, curl, Go-http-client/, ฯลฯ) หรือลำดับไฮเดอร์ที่ผิดปกติ (เช่นขาด Accept-Language, Accept หรือส่งค่าเดียวกันทุกครั้ง) Cloudflare อาจใช้นิพจน์เฮือริสติกส์ตรวจจับตัวอย่างดังกล่าว เช่น
+
+if http.User-Agent matches /(python-requests|curl|java|Go-http-client)/i:
+    block request
+
+
+และอาจรวมเงื่อนไขอื่นๆ เช่น Referer หรือ Accept เพื่อเสริมความแม่นยำ. ตัวอย่าง regex สำหรับตรวจจับ User-Agent ยอดนิยมของบ็อตคือ:
+
+^(python-requests|curl|java.*|Wget).*$
+
+
+การใช้เฮดเดอร์เหล่านี้ช่วยกรองคำขอที่ “ไม่เหมือนมนุษย์” ได้.
+
+ระบบจัดอันดับและตรวจสอบบ็อต (Bot Management) – Cloudflare มีระบบ Bot Management ที่ให้คะแนน (bot_score) และติดป้ายกำกับบ็อต ยืนยันว่าเป็นบ็อตดีหรือไม่
+developers.cloudflare.com
+. Signature #69 น่าจะเน้นบล็อคบ็อตที่ ไม่ใช่บ็อตยืนยัน (verified bot) เช่น Google หรือ Bing ที่ได้รับการยอมรับ. สมมติเงื่อนไข (pseudo-code):
+
+if not cf.bot_management.verified_bot and cf.bot_management.score < threshold:
+    block request
+
+
+ซึ่ง cf.bot_management.verified_bot จะเป็น true หากเป็นบ็อตจากแหล่งเชื่อถือได้
+developers.cloudflare.com
+.
+
+ลักษณะเฉพาะของ Packet Header/HTTP Request
+
+User-Agent และโครงสร้าง HTTP header – บ็อตเน็ตหลายตัวยังใช้ User-Agent ที่ระบุชื่อไลบรารีหรือเครื่องมือสคริปต์ บางครั้งไม่นำส่งพารามิเตอร์ปกติของเบราว์เซอร์ เช่น Accept: text/html หรือ Accept-Language บอทที่ใช้ภาษา Go หรือ Python มักส่ง UA ที่ระบุเวอร์ชันของไลบรารี เช่น python-requests/2.25.1 หรือ Go-http-client/1.1. การมี UA แบบนี้อาจถือเป็นสัญญาณบ็อต.
+
+TLS Fingerprint (JA3/JA4) – คำขอ HTTPS จากบ็อตส่วนใหญ่มีรูปแบบ ClientHello ที่จำเพาะ (cipher suites, TLS extensions, ALPN) ซึ่งให้ค่า JA3/JA4 เฉพาะตัว หาก Cloudflare พบ JA4 fingerprint ที่ตรงกับฐานข้อมูลบ็อต JA4 fingerprint เช่น ค่า Protocol Identifier, TLS version, SNI presence, Cipher suite count เป็นต้น ที่ไม่สอดคล้องกับเบราว์เซอร์ปกติ ก็จะถือว่าเป็นบ็อต
+developers.cloudflare.com
+. ตัวอย่าง: บ็อตอาจไม่มี SNI (ค่า i ใน JA4 ที่แสดง IP แทน SNI), หรือใช้ชุด cipher เก่า ที่เบราว์เซอร์สมัยใหม่ไม่ใช้.
+
+การโจมตีเชิงปริมาณ (Traffic Pattern) – กรณี DDoS คำขออาจถูกส่งมาหนักๆ จากบ็อตหลายเครื่องพร้อมกัน แม้ว่ารายละเอียด HTTP จะเหมือนกัน (เช่น GET แบบเดียวกันหลายพันครั้ง) มักมีอัตราส่งต่อวินาทีสูงผิดปกติ Cloudflare อาจใช้กฎ generic rate-limit หรือ challenge ร่วมด้วย แต่ Signature #69 เน้นความเป็นบ็อตจากแหล่งที่รู้จักมาก่อนอยู่แล้ว.
+
+ตัวอย่างโค้ดหรือเงื่อนไขตรวจจับ
+
+ตรวจสอบ IP กับฐานบ็อตเน็ต (pseudo-code):
+
+// ตัวอย่างฟังก์ชันในระบบ WAF/IDS
+if client_ip in CloudflareBotnetThreatFeed:
+    block()  // บล็อคคำขอทันที
+
+
+โดย CloudflareBotnetThreatFeed แสดงรายการ IP ที่ Cloudflare รู้ว่ามีส่วนร่วมในการโจมตี DDoS
+developers.cloudflare.com
+.
+
+ตรวจสอบ JA3/JA4 Fingerprint (Cloudflare Rules Expression):
+
+(cf.bot_management.ja4 eq "t13d15..." or cf.bot_management.ja4 eq "t11n7...") 
+and not cf.bot_management.verified_bot
+
+
+เช่น หากค่า cf.bot_management.ja4 (JA4 fingerprint) ตรงกับลายเซ็นบ็อตที่รู้จัก และไม่ใช่บ็อตยืนยัน ก็ให้บล็อค.
+
+ตรวจจับ User-Agent ด้วย regex:
+
+http.request.user_agent regexMatch "^.*(python-requests|curl|java|Wget).*$"
+
+
+ตัวอย่างโค้ด pseudo-rule นี้จะจับคำขอที่มี User-Agent ประกอบด้วยคำหลักที่พบบ่อยในไลบรารีอัตโนมัติ หากเงื่อนไขนี้ตรงและอาจประกอบกับเงื่อนไขอื่นๆ (เช่น JA4 เฉพาะหรือ IP) ก็จะทำการบล็อค.
+
+เช็คบ็อตยืนยัน (Verified Bot) เพื่อยกเว้น:
+
+if not cf.bot_management.verified_bot and (other bot rules):
+    block()
+
+
+เงื่อนไขนี้ช่วยแน่ใจว่าจะไม่บล็อคบ็อตที่ได้รับการยืนยันแล้ว (เช่น Googlebot) ตามนโยบาย Cloudflare
+developers.cloudflare.com
+.
+
+แหล่งข้อมูลและการเรียนรู้ของ Cloudflare
+
+Cloudflare รู้จักบ็อตเน็ตและพฤติกรรมของมันผ่าน การเฝ้าสังเกตข่ายงานทั่วโลก และฐานข้อมูลภัยคุกคามที่อัปเดตอย่างต่อเนื่อง
+blog.cloudflare.com
+developers.cloudflare.com
+.
+
+ฐานข้อมูล IP ภัยคุกคาม (Botnet Threat Feed) – หาก ISP หรือโฮสต์เชื่อมต่อกับ Cloudflare, ข้อมูลบ็อตเน็ตที่มาจาก ASN นั้นๆ จะถูกส่งกลับไปยังเครือข่าย Cloudflare เพื่ออัปเดตฐานข้อมูล ส่วนผู้ให้บริการสามารถดึงข้อมูลจาก Threat Feed นี้ได้ฟรีเพื่อก้าวทันบ็อตเน็ตในเครือข่ายตน
+blog.cloudflare.com
+developers.cloudflare.com
+.
+
+** ASN และกลุ่มเครือข่าย** – Cloudflare พบว่าบ็อตเน็ตขนาดใหญ่หลายรายมาจาก ASNs ที่ให้บริการ VM/คลาวด์ (เช่น Hetzner, DigitalOcean)
+blog.cloudflare.com
+. การเฝ้าดู ASNs เหล่านี้ช่วยเพิ่มโอกาสตรวจจับได้เร็วขึ้น.
+
+การเรียนรู้และอัปเดตกฎ – ทีมวิจัยของ Cloudflare คอยพัฒนากฎและ fingerprint ใหม่ๆ เสริมเข้ามาเรื่อยๆ เมื่อมีการโจมตีรูปแบบใหม่ โดยอาจใช้ machine learning และเฮือริสติกส์เพื่อกำหนดว่าพฤติกรรมใดอาจเป็นบ็อตน่าสงสัย (เช่น การเรียก API แบบอัตโนมัติหลายครั้ง) ซึ่งนิพจน์เหล่านี้จะถูกทดสอบและปรับปรุงใน changelog อย่างสม่ำเสมอ
+developers.cloudflare.com
+developers.cloudflare.com
+.
+
+โดยสรุป Signature #69 ของ Cloudflare จะใช้ ข้อมูลภัยคุกคามเชิงบ็อตเน็ต (IP/ASN) ร่วมกับลักษณะเฉพาะของคำขอ (เช่น User-Agent ผิดปกติ, TLS fingerprint) เพื่อระบุและบล็อคคำขอจากบ็อตเน็ตที่รู้จักอย่างรวดเร็วและแม่นยำ
+developers.cloudflare.com
+blog.cloudflare.com
+.
+
+แหล่งอ้างอิง: ข้อมูลอ้างอิงจากเอกสารและบล็อกของ Cloudflare
+developers.cloudflare.com
+developers.cloudflare.com
+developers.cloudflare.com
+blog.cloudflare.com
+developers.cloudflare.com
+.
