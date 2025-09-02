@@ -153,8 +153,8 @@ func parseProxiesAdvanced(filename string) ([]*ProxyInfo, error) {
 				Auth:      "",
 				SessionID: fmt.Sprintf("%s:%s", hk, sessionValue),
 				// Anti-signature #69: แต่ละ proxy มี characteristics แตกต่างกัน
-				ProfileIndex: rand.Intn(6),  // 0-5 browser profiles (Chrome120,Chrome112,Chrome106,Firefox120,Firefox105,Safari)
-				LangIndex: rand.Intn(5),     // 0-4 accept-language options
+				ProfileIndex: rand.Intn(10),  // 0-9 browser profiles (multiple Chrome, Edge, Firefox, Safari)
+				LangIndex: rand.Intn(15),     // 0-14 accept-language options (expanded)
 				RateFactor: 0.5 + rand.Float64(), // 0.5x - 1.5x rate variation
 				ParamKey: []string{"v","cb","r","_","cache","t","ts","x"}[rand.Intn(8)],
 				TimingProfile: rand.Intn(3), // 0=conservative, 1=moderate, 2=aggressive  
@@ -173,8 +173,8 @@ func parseProxiesAdvanced(filename string) ([]*ProxyInfo, error) {
 				Auth:      base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", p[2], p[3]))),
 				SessionID: fmt.Sprintf("%s:%s", hk, sessionValue),
 				// Anti-signature #69: แต่ละ proxy มี characteristics แตกต่างกัน
-				ProfileIndex: rand.Intn(6),  // 0-5 browser profiles (Chrome120,Chrome112,Chrome106,Firefox120,Firefox105,Safari)
-				LangIndex: rand.Intn(5), 
+				ProfileIndex: rand.Intn(10),  // 0-9 browser profiles (multiple Chrome, Edge, Firefox, Safari)
+				LangIndex: rand.Intn(15), 
 				RateFactor: 0.5 + rand.Float64(),
 				ParamKey: []string{"v","cb","r","_","cache","t","ts","x"}[rand.Intn(8)],
 				TimingProfile: rand.Intn(3),
@@ -239,44 +239,52 @@ func establishTls(hostname string, conn *net.Conn, proxyInfo *ProxyInfo) (tls.UC
 	
 	// ใช้ proxy-specific profile เพื่อให้ consistent per proxy แต่ diverse across proxies
 	if proxyInfo != nil {
-		// ตาม ProfileIndex เลือก TLS fingerprint ที่สอดคล้องกับ browser profile (ใช้เฉพาะ fingerprints ที่มีจริง)
-		profileMod := proxyInfo.ProfileIndex % 6 // ลดเหลือ 6 options ที่มีจริง
+		// ตาม ProfileIndex เลือก TLS fingerprint ที่สอดคล้องกับ browser profile
+		profileMod := proxyInfo.ProfileIndex % 10 // ปรับตาม browser profiles ใหม่ที่มี 10 profiles
 		switch profileMod {
-		case 0:
+		case 0, 1, 2, 3: // Chrome variants
+			// Mix of different Chrome versions for diversity
+			chromeOptions := []tls.ClientHelloID{
+				tls.HelloChrome_120,
+				tls.HelloChrome_112,
+				tls.HelloChrome_106,
+				tls.HelloChrome_103,
+			}
+			clientHello = chromeOptions[rand.Intn(len(chromeOptions))]
+		case 4: // Edge
+			// Edge uses Chrome fingerprints
 			clientHello = tls.HelloChrome_120
-		case 1:
-			clientHello = tls.HelloChrome_112 // Chrome เก่ากว่า
-		case 2:
-			clientHello = tls.HelloChrome_106 // Chrome เก่ากว่าอีก
-		case 3:
-			clientHello = tls.HelloFirefox_120
-		case 4:
-			clientHello = tls.HelloFirefox_105 // Firefox เก่ากว่า
-		case 5:
-			clientHello = tls.HelloSafari_16_0 // Safari on macOS
+		case 5, 6, 7: // Firefox variants
+			firefoxOptions := []tls.ClientHelloID{
+				tls.HelloFirefox_120,
+				tls.HelloFirefox_105,
+				tls.HelloFirefox_102,
+			}
+			clientHello = firefoxOptions[rand.Intn(len(firefoxOptions))]
+		case 8, 9: // Safari variants
+			clientHello = tls.HelloSafari_16_0
 		default:
 			clientHello = tls.HelloChrome_120
 		}
 		
 		// เพิ่ม session-based evolution (เปลี่ยนตาม session duration)
 		sessionMinutes := int(time.Since(proxyInfo.SessionStartTime).Minutes())
-		if sessionMinutes > 15 && sessionMinutes%20 == 0 {
-			// ทุก 20 นาที มีโอกาส "อัพเดท browser" 5%
-			if rand.Float32() < 0.05 {
-				// ใช้ string comparison แทน switch บน ClientHelloID
-				currentFingerprint := clientHello.Client
-				if currentFingerprint == "Chrome" {
-					clientHello = tls.HelloChrome_120 // Chrome auto-update
-				} else if currentFingerprint == "Firefox" {
-					clientHello = tls.HelloFirefox_120 // Firefox auto-update
+		if sessionMinutes > 30 && sessionMinutes%40 == 0 {
+			// ทุก 40 นาที มีโอกาส "อัพเดท browser" 3%
+			if rand.Float32() < 0.03 {
+				// Simulate browser updates with newer versions
+				if profileMod < 5 { // Chrome/Edge
+					clientHello = tls.HelloChrome_120
+				} else if profileMod < 8 { // Firefox
+					clientHello = tls.HelloFirefox_120
 				}
 			}
 		}
 	} else {
-		// Fallback random selection (ใช้เฉพาะ fingerprints ที่มีจริง)
+		// Fallback random selection with more diversity
 		fingerprints := []tls.ClientHelloID{
-			tls.HelloChrome_120, tls.HelloChrome_112, tls.HelloChrome_106,
-			tls.HelloFirefox_120, tls.HelloFirefox_105,
+			tls.HelloChrome_120, tls.HelloChrome_112, tls.HelloChrome_106, tls.HelloChrome_103,
+			tls.HelloFirefox_120, tls.HelloFirefox_105, tls.HelloFirefox_102,
 			tls.HelloSafari_16_0,
 		}
 		clientHello = fingerprints[rand.Intn(len(fingerprints))]
@@ -349,7 +357,18 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 		for _, b := range []byte(proxyInfo.Addr) {
 			proxyHash = proxyHash*31 + int(b)
 		}
-		correlationDelay := time.Duration((proxyHash%2000)+500) * time.Millisecond
+		// More realistic delays based on human behavior patterns
+		baseDelay := (proxyHash % 3000) + 500
+		// Add time-of-day variance
+		hour := time.Now().Hour()
+		if hour >= 9 && hour <= 17 { // Work hours
+			baseDelay = baseDelay * 2 // Slower during work
+		} else if hour >= 0 && hour <= 6 { // Night time
+			baseDelay = baseDelay * 3 // Much slower at night
+		}
+		// Add random jitter
+		jitter := rand.Intn(500) - 250 // +/- 250ms
+		correlationDelay := time.Duration(baseDelay+jitter) * time.Millisecond
 		time.Sleep(correlationDelay)
 	}
 	
@@ -376,48 +395,78 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 			acceptEncoding  string
 			acceptValue     string
 		}{
-			// Chrome 120 profiles  
+			// Chrome 131 profiles (latest stable)
 			{
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-				"\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+				"\"Chromium\";v=\"131\", \"Google Chrome\";v=\"131\", \"Not=A?Brand\";v=\"24\"",
 				"\"Windows\"", false, false, false,
 				"gzip, deflate, br, zstd", 
 				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 			},
-			// Chrome 112 profiles (เปลี่ยนจาก 119)
+			// Chrome 130 profiles  
 			{
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
-				"\"Chromium\";v=\"112\", \"Google Chrome\";v=\"112\", \"Not:A-Brand\";v=\"99\"",
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+				"\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"130\", \"Google Chrome\";v=\"130\"",
+				"\"Windows\"", false, false, false,
+				"gzip, deflate, br, zstd", 
+				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+			},
+			// Chrome 129 profiles
+			{
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+				"\"Chromium\";v=\"129\", \"Not(A:Brand\";v=\"8\", \"Google Chrome\";v=\"129\"",
 				"\"Windows\"", false, false, false,
 				"gzip, deflate, br, zstd",
 				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 			},
-			// Chrome 106 profile (เปลี่ยนจาก 118)
+			// Chrome on macOS
 			{
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36",
-				"\"Chromium\";v=\"106\", \"Google Chrome\";v=\"106\", \"Not;A=Brand\";v=\"99\"",
-				"\"Windows\"", false, false, false,
-				"gzip, deflate, br",
+				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+				"\"Chromium\";v=\"131\", \"Google Chrome\";v=\"131\", \"Not=A?Brand\";v=\"24\"",
+				"\"macOS\"", false, false, false,
+				"gzip, deflate, br, zstd",
 				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 			},
-			// Firefox 120 profiles
+			// Edge 131 profiles
 			{
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+				"\"Chromium\";v=\"131\", \"Microsoft Edge\";v=\"131\", \"Not=A?Brand\";v=\"24\"",
+				"\"Windows\"", false, false, true,
+				"gzip, deflate, br, zstd",
+				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+			},
+			// Firefox 133 profiles (latest)
+			{
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
 				"", "", true, false, false,
-				"gzip, deflate, br",
+				"gzip, deflate, br, zstd",
+				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+			},
+			// Firefox 132 profile
+			{
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0", 
+				"", "", true, false, false,
+				"gzip, deflate, br, zstd",
 				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 			},
-			// Firefox 105 profile (เปลี่ยนจาก 119)
+			// Firefox on macOS
 			{
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:105.0) Gecko/20100101 Firefox/105.0", 
+				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15) Gecko/20100101 Firefox/133.0",
 				"", "", true, false, false,
-				"gzip, deflate, br",
+				"gzip, deflate, br, zstd",
 				"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 			},
-			// Safari 16.0 profile (macOS)
+			// Safari 17.2 profile (macOS Sonoma)
 			{
-				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
+				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
 				"", "\"macOS\"", false, true, false,
+				"gzip, deflate, br",
+				"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+			},
+			// Safari on iPhone
+			{
+				"Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+				"", "\"iOS\"", false, true, false,
 				"gzip, deflate, br",
 				"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 			},
@@ -426,9 +475,19 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 	acceptLanguages := []string{
 		"en-US,en;q=0.9",
 		"en-GB,en;q=0.9", 
-		"ru,en;q=0.9,en-US;q=0.8",
+		"en-US,en;q=0.9,th;q=0.8",
+		"th-TH,th;q=0.9,en;q=0.8",
+		"en-US,en;q=0.9,ja;q=0.8",
+		"ja-JP,ja;q=0.9,en;q=0.8",
+		"zh-CN,zh;q=0.9,en;q=0.8",
+		"ko-KR,ko;q=0.9,en;q=0.8",
+		"es-ES,es;q=0.9,en;q=0.8",
+		"pt-BR,pt;q=0.9,en;q=0.8",
+		"ru-RU,ru;q=0.9,en;q=0.8",
 		"de-DE,de;q=0.9,en;q=0.8",
 		"fr-FR,fr;q=0.9,en;q=0.8",
+		"it-IT,it;q=0.9,en;q=0.8",
+		"nl-NL,nl;q=0.9,en;q=0.8",
 	}
 	
 	// Advanced session management กับ organic behavior simulation (anti-signature #69)
@@ -444,16 +503,33 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 		hour int
 		activityMultiplier float64
 		pauseProbability float32
+		burstProbability float32  // Probability of burst activity
+		avgRequestsPerBurst int   // Average requests in a burst
 	}{
-		{0, 0.1, 0.9},   // กลางคืน - activity น้อย, pause เยอะ
-		{1, 0.05, 0.95},
-		{2, 0.03, 0.97},
-		{6, 0.3, 0.7},   // เช้า - เริ่มมี activity
-		{8, 0.8, 0.3},   // เช้าทำงาน - activity สูง
-		{12, 1.0, 0.2},  // เที่ยง - peak activity
-		{14, 0.9, 0.3},  // บ่าย - activity สูง
-		{18, 0.7, 0.4},  // เย็น - ลดลง
-		{22, 0.4, 0.6},  // ค่ำ - activity ปานกลาง
+		{0, 0.1, 0.9, 0.05, 3},    // กลางคืน - activity น้อย, pause เยอะ
+		{1, 0.05, 0.95, 0.02, 2},
+		{2, 0.03, 0.97, 0.01, 2},
+		{3, 0.02, 0.98, 0.01, 2},
+		{4, 0.02, 0.98, 0.01, 2},
+		{5, 0.05, 0.9, 0.05, 3},
+		{6, 0.3, 0.7, 0.2, 5},     // เช้า - เริ่มมี activity
+		{7, 0.6, 0.5, 0.3, 7},
+		{8, 0.8, 0.3, 0.4, 10},    // เช้าทำงาน - activity สูง
+		{9, 0.9, 0.25, 0.5, 12},
+		{10, 0.95, 0.2, 0.6, 15},
+		{11, 0.95, 0.2, 0.6, 15},
+		{12, 1.0, 0.2, 0.7, 20},   // เที่ยง - peak activity
+		{13, 0.95, 0.25, 0.6, 15},
+		{14, 0.9, 0.3, 0.5, 12},   // บ่าย - activity สูง
+		{15, 0.85, 0.3, 0.5, 12},
+		{16, 0.8, 0.35, 0.4, 10},
+		{17, 0.75, 0.4, 0.4, 10},
+		{18, 0.7, 0.4, 0.3, 8},    // เย็น - ลดลง
+		{19, 0.8, 0.35, 0.4, 10},  // After dinner surge
+		{20, 0.85, 0.3, 0.5, 12},
+		{21, 0.7, 0.4, 0.4, 10},
+		{22, 0.4, 0.6, 0.2, 5},    // ค่ำ - activity ปานกลาง
+		{23, 0.2, 0.8, 0.1, 3},
 	}
 	
 	currentHour := time.Now().Hour()
@@ -461,12 +537,25 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 		hour int
 		activityMultiplier float64
 		pauseProbability float32
+		burstProbability float32
+		avgRequestsPerBurst int
 	}
 	
 	// หา pattern ที่ใกล้เคียงกับเวลาปัจจุบัน
 	for _, pattern := range dailyPatterns {
 		if currentHour >= pattern.hour {
 			currentPattern = pattern
+		}
+	}
+	
+	// Add day-of-week variations
+	weekday := time.Now().Weekday()
+	if weekday == time.Saturday || weekday == time.Sunday {
+		// Weekend: more sporadic activity, later start
+		currentPattern.activityMultiplier *= 0.8
+		currentPattern.pauseProbability *= 1.2
+		if currentPattern.pauseProbability > 0.95 {
+			currentPattern.pauseProbability = 0.95
 		}
 	}
 	
@@ -573,7 +662,10 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 		}
 		
 		// Browser-specific headers ที่สอดคล้องกับแต่ละ browser อย่างแม่นยำ (anti-pattern #3)
-		h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
+		// Proper header ordering as per real browsers to avoid signature #69
+		if !browserProfile.isFirefox && !browserProfile.isSafari {
+			h2_headers = append(h2_headers, [2]string{"upgrade-insecure-requests", "1"})
+		}
 		h2_headers = append(h2_headers, [2]string{"user-agent", browserProfile.userAgent})
 		h2_headers = append(h2_headers, [2]string{"accept", browserProfile.acceptValue}) // ใช้ browser-specific accept value
 		
@@ -587,6 +679,7 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 		
 		// Accept-Encoding ที่แม่นยำตาม browser
 		h2_headers = append(h2_headers, [2]string{"accept-encoding", browserProfile.acceptEncoding})
+		h2_headers = append(h2_headers, [2]string{"accept-language", acceptLang})
 		
 		// Safari-specific headers
 		if browserProfile.isSafari {
@@ -610,14 +703,14 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 			}
 		}
 		
-		h2_headers = append(h2_headers, [2]string{"accept-language", acceptLang})
-		
 		// เพิ่ม headers เสริมเพื่อจำลองเบราว์เซอร์จริงให้สมจริงขึ้น (เพื่อหลีกเลี่ยง signature #17)
 		
 		// Dynamic header probability based on proxy profile (anti-signature #69)
 		dntProb := float32(0.3)
 		cacheControlProb := float32(0.1)
 		refererProb := float32(0.7)
+		pragmaProb := float32(0.05)
+		priorityProb := float32(0.6) // Chrome Priority header
 		
 		if proxyInfo != nil {
 			// ปรับความน่าจะเป็นตาม TimingProfile
@@ -633,14 +726,27 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 			}
 		}
 		
-		// DNT header (บางครั้งมี บางครั้งไม่มี)
-		if rand.Float32() < dntProb {
-			h2_headers = append(h2_headers, [2]string{"dnt", "1"})
+		// Proper header ordering based on browser type
+		// Chrome/Edge specific Priority header
+		if !browserProfile.isFirefox && !browserProfile.isSafari && rand.Float32() < priorityProb {
+			// Chrome Priority header for HTTP/2
+			priorities := []string{"u=0, i", "u=1, i", "u=0", "u=1"}
+			h2_headers = append(h2_headers, [2]string{"priority", priorities[rand.Intn(len(priorities))]})
 		}
 		
 		// Cache-Control (เมื่อมีการ refresh)
 		if rand.Float32() < cacheControlProb {
 			h2_headers = append(h2_headers, [2]string{"cache-control", "max-age=0"})
+		}
+		
+		// Pragma header (legacy cache control)
+		if rand.Float32() < pragmaProb {
+			h2_headers = append(h2_headers, [2]string{"pragma", "no-cache"})
+		}
+		
+		// DNT header (บางครั้งมี บางครั้งไม่มี)
+		if rand.Float32() < dntProb {
+			h2_headers = append(h2_headers, [2]string{"dnt", "1"})
 		}
 		
 		// Referer header (สำหรับ subsequent requests)
@@ -649,6 +755,8 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 				fmt.Sprintf("%s://%s/", scheme, parsed.Host),
 				fmt.Sprintf("%s://%s/index", scheme, parsed.Host),
 				fmt.Sprintf("%s://%s/home", scheme, parsed.Host),
+				fmt.Sprintf("%s://%s/search", scheme, parsed.Host),
+				fmt.Sprintf("%s://%s/products", scheme, parsed.Host),
 			}
 			h2_headers = append(h2_headers, [2]string{"referer", referers[rand.Intn(len(referers))]})
 		}
@@ -664,10 +772,28 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 			// จำลอง session cookies ที่เบราว์เซอร์เก็บไว้
 			if len(proxyInfo.SessionCookies) == 0 && proxyInfo.RequestCount > 3 {
 				// หลังจาก request 3-4 ครั้ง "server" ก็จะส่ง session cookies มา
-				proxyInfo.SessionCookies["JSESSIONID"] = fmt.Sprintf("%s%d", genRandStr(16), time.Now().Unix())
-				proxyInfo.SessionCookies["_csrf"] = genRandStr(32)
-				if rand.Float32() < 0.3 {
+				// More realistic cookie names and values
+				sessionTypes := []string{"PHPSESSID", "JSESSIONID", "ASP.NET_SessionId", "session_id", "sid"}
+				proxyInfo.SessionCookies[sessionTypes[rand.Intn(len(sessionTypes))]] = genRandStr(26 + rand.Intn(10))
+				
+				// CSRF tokens with realistic names
+				csrfNames := []string{"_csrf", "csrf_token", "XSRF-TOKEN", "__RequestVerificationToken"}
+				proxyInfo.SessionCookies[csrfNames[rand.Intn(len(csrfNames))]] = genRandStr(32 + rand.Intn(32))
+				
+				// Analytics cookies
+				if rand.Float32() < 0.4 {
 					proxyInfo.SessionCookies["_ga"] = fmt.Sprintf("GA1.2.%d.%d", rand.Int63n(999999999), time.Now().Unix()-rand.Int63n(86400))
+					proxyInfo.SessionCookies["_gid"] = fmt.Sprintf("GA1.2.%d.%d", rand.Int63n(999999999), time.Now().Unix()-rand.Int63n(86400))
+				}
+				
+				// User preference cookies
+				if rand.Float32() < 0.3 {
+					proxyInfo.SessionCookies["lang"] = []string{"en", "th", "ja", "zh", "ko"}[rand.Intn(5)]
+				}
+				
+				// Marketing/tracking cookies
+				if rand.Float32() < 0.2 {
+					proxyInfo.SessionCookies["_fbp"] = fmt.Sprintf("fb.1.%d.%d", time.Now().Unix()*1000, rand.Int63n(999999999))
 				}
 			}
 			
@@ -683,6 +809,11 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 				}
 				cookieHeader += strings.Join(sessionCookies, "; ")
 			}
+		}
+		
+		// Origin header for CORS requests
+		if secFetchSite == "cross-site" || (secFetchMode == "cors" && rand.Float32() < 0.8) {
+			h2_headers = append(h2_headers, [2]string{"origin", fmt.Sprintf("%s://%s", scheme, parsed.Host)})
 		}
 		
 		if cookieHeader != "" {
@@ -719,7 +850,13 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 				atomic.AddInt64(&errorCount, 1)
 				
 				// Human-like retry delays (เลียนแบบการรอของเบราว์เซอร์จริง)
-				retryDelay := time.Duration(RandomInt(500, 2000)*retryCount) * time.Millisecond
+				// Use exponential backoff with jitter like real browsers
+				baseRetryDelay := 1000 * (1 << uint(retryCount-1)) // 1s, 2s, 4s, 8s...
+				jitter := RandomInt(-500, 500) // +/- 500ms jitter
+				retryDelay := time.Duration(baseRetryDelay+jitter) * time.Millisecond
+				if retryDelay > 30*time.Second {
+					retryDelay = 30 * time.Second // Cap at 30s
+				}
 			if debugmode > 1 {
 					fmt.Printf("[H2C] | Connection failed, retry %d/%d after %v\n", retryCount, maxRetries, retryDelay)
 			}
@@ -735,7 +872,13 @@ func startRawTLS(parsed *url.URL, proxyInfo *ProxyInfo) {
 				conn.Close()
 				
 				// TLS handshake failures ใช้ delay ต่างออกไป
-				retryDelay := time.Duration(RandomInt(200, 1000)*retryCount) * time.Millisecond
+				// Shorter delays for TLS failures (browsers retry faster)
+				baseRetryDelay := 500 * (1 << uint(retryCount-1)) // 500ms, 1s, 2s, 4s...
+				jitter := RandomInt(-200, 200) // +/- 200ms jitter
+				retryDelay := time.Duration(baseRetryDelay+jitter) * time.Millisecond
+				if retryDelay > 15*time.Second {
+					retryDelay = 15 * time.Second // Cap at 15s
+				}
 						if debugmode > 1 {
 					fmt.Printf("[H2C] | TLS handshake failed, retry %d/%d after %v\n", retryCount, maxRetries, retryDelay)
 				}
